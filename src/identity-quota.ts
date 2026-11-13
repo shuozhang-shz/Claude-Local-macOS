@@ -1,0 +1,95 @@
+/**
+ * [INPUT]: Bounded local quota values, independent window evidence/reset timestamps and an explicit clock.
+ * [OUTPUT]: Independent quota-window presentation, truthful percentage badge/detail formatting, explicit trusted-reset inference, elapsed reset duration, 7d linear burn pace and conservative recommendations.
+ * [POS]: Pure frontend quota model; no network, ledger writes or account operations.
+ * [PROTOCOL]: Update this header and src/CLAUDE.md with changes.
+ */
+import type {QuotaEvidence} from './identity-model';
+import {formatTruthfulPercent} from './smart-relay-model';
+
+export type QuotaInput = QuotaEvidence & {quota_5h_used?: number | null; quota_5h_reset_at?: number | null; quota_7d_used?: number | null; quota_7d_reset_at?: number | null};
+export type WeeklyPace = {expectedUsedPct: number; expectedRemPct: number; deltaUsedPct: number; suppressed: boolean; ahead: boolean};
+
+const SEVEN_DAYS_SEC = 7 * 86400;
+
+export function formatCompactEta(resetSec: number | null | undefined, nowSec: number) {
+  if (!resetSec || resetSec <= nowSec) return '';
+  const mins = Math.max(1, Math.floor((resetSec - nowSec) / 60));
+  const d = Math.floor(mins / 1440),
+    h = Math.floor((mins % 1440) / 60),
+    m = mins % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+export function formatElapsedSinceReset(resetSec: number | null | undefined, nowSec: number) {
+  if (!resetSec || nowSec < resetSec) return '';
+  const mins = Math.max(1, Math.floor((nowSec - resetSec) / 60));
+  const d = Math.floor(mins / 1440),
+    h = Math.floor((mins % 1440) / 60),
+    m = mins % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+export function evaluateWeeklyPace(used7d: number, reset7dSec: number | null | undefined, nowSec: number): WeeklyPace | null {
+  if (!reset7dSec || !Number.isFinite(reset7dSec) || reset7dSec <= nowSec) return null;
+  const remainingSec = reset7dSec - nowSec;
+  if (remainingSec > SEVEN_DAYS_SEC) return null;
+  const elapsedSec = Math.max(0, SEVEN_DAYS_SEC - remainingSec);
+  const expectedUsedPct = Math.max(0, Math.min(100, Math.round((elapsedSec / SEVEN_DAYS_SEC) * 100)));
+  const expectedRemPct = 100 - expectedUsedPct;
+  const suppressed = elapsedSec < 86400;
+  const clampedUsed = Math.max(0, Math.min(100, used7d));
+  const deltaUsedPct = Math.round(clampedUsed - expectedUsedPct);
+  const ahead = !suppressed && clampedUsed < 100 && deltaUsedPct >= 15;
+  return {expectedUsedPct, expectedRemPct, deltaUsedPct, suppressed, ahead};
+}
+export function formatResetClock(resetSec: number | null | undefined, includeDate = true) {
+  if (!resetSec) return '';
+  const dt = new Date(resetSec * 1000);
+  if (!Number.isFinite(dt.getTime())) return '';
+  const hh = String(dt.getHours()).padStart(2, '0');
+  const mm = String(dt.getMinutes()).padStart(2, '0');
+  if (!includeDate) return `${hh}:${mm}`;
+  const mo = String(dt.getMonth() + 1).padStart(2, '0');
+  const da = String(dt.getDate()).padStart(2, '0');
+  return `${mo}-${da} ${hh}:${mm}`;
+}
+export function evaluateQuota(item: QuotaInput | null | undefined, nowSec: number) {
+  if (!item) return null;
+  const expired7d = item.quota_7d_reset_at != null && nowSec >= item.quota_7d_reset_at;
+  const expired5h = item.quota_5h_reset_at != null && nowSec >= item.quota_5h_reset_at;
+  const r5 = !expired5h && item.quota_5h_reset_at ? item.quota_5h_reset_at : null;
+  const r7 = !expired7d && item.quota_7d_reset_at ? item.quota_7d_reset_at : null;
+  const source5h = item.quota_5h_source ?? item.quota_source;
+  const source7d = item.quota_7d_source ?? item.quota_source;
+  const inferred = (source: typeof source5h, used: number | null | undefined, reset: number | null | undefined, observed: number | null | undefined) =>
+    (source === 'server_anchor' || (source === 'reset_inferred' && used === 0)) &&
+    typeof used === 'number' && Number.isFinite(used) && used >= 0 && used <= 100 &&
+    typeof reset === 'number' && Number.isFinite(reset) && reset > 0 && reset <= nowSec &&
+    typeof observed === 'number' && Number.isFinite(observed) && observed > 0 && observed < reset * 1000;
+  const inferred5h = inferred(source5h, item.quota_5h_used, item.quota_5h_reset_at, item.quota_5h_source != null ? item.quota_5h_observed_at_ms : item.quota_observed_at_ms);
+  const inferred7d = inferred(source7d, item.quota_7d_used, item.quota_7d_reset_at, item.quota_7d_source != null ? item.quota_7d_observed_at_ms : item.quota_observed_at_ms);
+  const inferredReset5h = inferred5h ? (item.quota_5h_reset_at ?? null) : null;
+  const inferredReset7d = inferred7d ? (item.quota_7d_reset_at ?? null) : null;
+  const known5h = inferred5h || (source5h !== 'unknown' && source5h !== 'reset_inferred' && typeof item.quota_5h_used === 'number' && Number.isFinite(item.quota_5h_used) && !expired5h);
+  const known7d = inferred7d || (source7d !== 'unknown' && source7d !== 'reset_inferred' && typeof item.quota_7d_used === 'number' && Number.isFinite(item.quota_7d_used) && !expired7d);
+  const used5h = known5h && !inferred5h ? Math.max(0, Math.min(100, item.quota_5h_used!)) : 0;
+  const used7d = known7d && !inferred7d ? Math.max(0, Math.min(100, item.quota_7d_used!)) : 0;
+  const rem5h = known5h ? 100 - used5h : 0;
+  const rem7d = known7d ? 100 - used7d : 0;
+  const effectiveRem = Math.min(rem5h, rem7d);
+  const level: 'ok' | 'warn' | 'empty' = effectiveRem === 0 ? 'empty' : effectiveRem <= 20 ? 'warn' : 'ok';
+  const level5h: 'ok' | 'warn' | 'empty' = rem5h === 0 ? 'empty' : rem5h <= 20 ? 'warn' : 'ok';
+  const level7d: 'ok' | 'warn' | 'empty' = rem7d === 0 ? 'empty' : rem7d <= 20 ? 'warn' : 'ok';
+  const eta5h = formatCompactEta(r5, nowSec);
+  const eta7d = formatCompactEta(r7, nowSec);
+  const clock5h = formatResetClock(r5, false);
+  const clock7d = formatResetClock(r7, true);
+  const primaryEta = rem7d === 0 ? eta7d : eta5h && eta7d ? `${eta5h}/${eta7d}` : eta5h || eta7d;
+  const badge = `5h ${known5h ? formatTruthfulPercent(rem5h) : '?'} · 7d ${known7d ? formatTruthfulPercent(rem7d) : '?'}${primaryEta ? ` (${primaryEta})` : ''}`;
+  const detail = `5h: ${known5h ? formatTruthfulPercent(rem5h) : '?'}${eta5h ? ` (${eta5h} · ${clock5h})` : ''} | 7d: ${known7d ? formatTruthfulPercent(rem7d) : '?'}${eta7d ? ` (${eta7d} · ${clock7d})` : ''}`;
+  const pace7d = known7d && !inferred7d ? evaluateWeeklyPace(used7d, r7, nowSec) : null;
+  return {rem5h, rem7d, effectiveRem, level, level5h, level7d, primaryEta, badge, detail, used5h, used7d, r5, r7, inferredReset5h, inferredReset7d, expired5h, expired7d, known5h, known7d, inferred5h, inferred7d, pace7d, source5h: inferred5h ? 'reset_inferred' as const : source5h, source7d: inferred7d ? 'reset_inferred' as const : source7d, recommendable: known5h && known7d && !inferred5h && !inferred7d};
+}

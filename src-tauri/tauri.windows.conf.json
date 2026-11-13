@@ -1,0 +1,80 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBuildCommand": "bun run build && pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/package-browser.ps1"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Claude-Local",
+        "width": 1040,
+        "height": 820,
+        "minWidth": 760,
+        "minHeight": 640,
+        "visible": false,
+        "decorations": true
+      },
+      {
+        "label": "monitor",
+        "title": "Claude-Local Monitor",
+        "url": "index.html?window=monitor",
+        "width": 340,
+        "height": 258,
+        "minWidth": 340,
+        "minHeight": 258,
+        "maxWidth": 340,
+        "maxHeight": 258,
+        "resizable": false,
+        "maximizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "visible": false
+      }
+    ]
+  },
+  "bundle": {
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "resources": {
+      "../dist/": "browser-ui/",
+      "../browser-runtime/version.txt": "browser-runtime/version.txt",
+      "../browser-runtime/LICENSE.fingerprint-chromium": "browser-runtime/LICENSE.fingerprint-chromium",
+      "../browser-runtime/WindowsBrowser/": "browser-runtime/WindowsBrowser/",
+      "../browser-runtime/icons/browser.ico": "browser-runtime/icons/browser.ico",
+      "../scripts/claude_quota.py": "scripts/claude_quota.py",
+      "../scripts/claude_quota_online.py": "scripts/claude_quota_online.py",
+      "../scripts/quota_runtime.py": "scripts/quota_runtime.py",
+        "../scripts/quota_archive.py": "scripts/quota_archive.py",
+      "../browser-runtime/quota-bridge/manifest.json": "browser-runtime/quota-bridge/manifest.json",
+      "../browser-runtime/quota-bridge/background.js": "browser-runtime/quota-bridge/background.js",
+      "../browser-runtime/quota-bridge/content.js": "browser-runtime/quota-bridge/content.js",
+      "windows/LICENSE.unicode.txt": "licenses/LICENSE.unicode.txt"
+    },
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "installMode": "currentUser",
+        "languages": [
+          "English",
+          "SimpChinese",
+          "TradChinese"
+        ],
+        "installerHooks": "windows/installer-hooks.nsh"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      }
+    }
+  }
+}

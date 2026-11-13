@@ -1,0 +1,95 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Claude-Local",
+        "width": 1040,
+        "height": 820,
+        "minWidth": 760,
+        "minHeight": 640,
+        "visible": false,
+        "decorations": true
+      },
+      {
+        "label": "monitor",
+        "title": "Claude-Local Monitor",
+        "url": "index.html?window=monitor",
+        "width": 340,
+        "height": 258,
+        "minWidth": 340,
+        "minHeight": 258,
+        "maxWidth": 340,
+        "maxHeight": 258,
+        "resizable": false,
+        "maximizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "visible": false
+      }
+    ]
+  },
+  "bundle": {
+    "targets": [
+      "deb",
+      "appimage"
+    ],
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1",
+          "zsh",
+          "xdg-utils",
+          "libnss3",
+          "libnspr4",
+          "libgbm1",
+          "libasound2",
+          "libxss1",
+          "curl"
+        ],
+        "files": {
+          "/usr/share/applications/claude-local-browser.desktop": "../browser-runtime/claude-local-browser.desktop",
+          "/usr/share/icons/hicolor/512x512/apps/claude-local-browser.png": "../browser-runtime/icons/icon.png",
+          "/usr/libexec/Claude-Local Browser/": "../browser-runtime/LinuxBrowser/"
+        }
+      },
+      "rpm": {
+        "depends": [
+          "webkit2gtk4.1",
+          "gtk3",
+          "libayatana-appindicator-gtk3",
+          "zsh",
+          "xdg-utils",
+          "nss",
+          "nspr",
+          "mesa-libgbm",
+          "alsa-lib",
+          "libXScrnSaver",
+          "curl"
+        ],
+        "files": {
+          "/usr/share/applications/claude-local-browser.desktop": "../browser-runtime/claude-local-browser.desktop",
+          "/usr/share/icons/hicolor/512x512/apps/claude-local-browser.png": "../browser-runtime/icons/icon.png",
+          "/usr/libexec/Claude-Local Browser/": "../browser-runtime/LinuxBrowser/"
+        },
+        "compression": {
+          "type": "zstd",
+          "level": 3
+        }
+      },
+      "appimage": {
+        "files": {
+          "usr/share/applications/claude-local-browser.desktop": "../browser-runtime/claude-local-browser.desktop",
+          "usr/share/icons/hicolor/512x512/apps/claude-local-browser.png": "../browser-runtime/icons/icon.png",
+          "usr/libexec/Claude-Local Browser/": "../browser-runtime/LinuxBrowser/"
+        }
+      }
+    }
+  }
+}

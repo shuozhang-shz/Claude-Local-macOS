@@ -1,0 +1,35 @@
+/* [INPUT]: Existing theme, spacing and typography tokens.
+ * [OUTPUT]: Independently readable overview tiles without duplicate target copy, scoped feedback and seven configuration cards.
+ * [POS]: Quick page only; shared themes, compact sidebar and reduced-motion preferences remain authoritative.
+ * [PROTOCOL]: Update src/CLAUDE.md with changes. */
+.quick-header { justify-content: space-between; gap: 12px; }
+.quick-content { padding: 0 0 4px; display: grid; gap: 16px; container: quick / inline-size; }
+.quick-overview { padding: 18px; }
+.quick-overview-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.quick-overview-heading h2 { margin: 0; font-size: 15px; font-weight: 650; }
+.quick-state-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.quick-state-grid > div { display: grid; align-content: start; gap: 7px; min-width: 0; padding: 12px; background: var(--background); border: 1px solid var(--landing-line); border-radius: 10px; }
+.quick-state-grid span, .quick-state-grid small { font-size: 12px; line-height: 1.6; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.quick-state-grid strong { font-size: 13px; line-height: 1.6; font-weight: 600; overflow-wrap: anywhere; }
+.quick-state-grid [data-read-state="pending"] > strong { color: var(--muted-foreground); }
+.quick-state-grid [data-read-state="failed"] > strong, .quick-state-grid .quick-read-error { color: var(--error-foreground); }
+.quick-feedback.system-feedback { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--landing-line); }
+.quick-feedback > strong { font-weight: 600; }
+.quick-content > .settings-group-heading { margin: 2px 0 -4px; }
+.quick-setup-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.quick-setup-card { display: flex; flex-direction: column; align-items: flex-start; padding: 18px; min-width: 0; }
+.quick-card-title { display: flex; align-items: center; gap: 10px; }
+.quick-card-title h3 { font-size: 14px; font-weight: 650; margin: 0; }
+.quick-setup-card p { color: var(--muted-foreground); font-size: 12px; line-height: 1.7; margin: 12px 0 16px; flex: 1; }
+.quick-setup-card > button { max-width: 100%; }
+@container quick (max-width: 660px) {
+  .quick-setup-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .quick-state-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container quick (max-width: 420px) {
+  .quick-setup-grid { grid-template-columns: minmax(0, 1fr); }
+  .quick-overview-heading { align-items: flex-start; flex-direction: column; }
+}
+@container quick (max-width: 300px) {
+  .quick-state-grid { grid-template-columns: minmax(0, 1fr); }
+}

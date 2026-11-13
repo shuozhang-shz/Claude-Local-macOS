@@ -1,0 +1,75 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Claude-Local",
+  "version": "0.3.1",
+  "identifier": "ai.local.claude-local",
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Claude-Local",
+        "width": 1040,
+        "height": 820,
+        "minWidth": 760,
+        "minHeight": 640,
+        "visible": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "backgroundColor": "#FFFFFF"
+      },
+      {
+        "label": "monitor",
+        "title": "Claude-Local Monitor",
+        "url": "index.html?window=monitor",
+        "width": 340,
+        "height": 258,
+        "minWidth": 340,
+        "minHeight": 258,
+        "maxWidth": 340,
+        "maxHeight": 258,
+        "resizable": false,
+        "maximizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "resources": {
+      "../dist/": "browser-ui/",
+      "../browser-runtime/version.txt": "browser-runtime/version.txt",
+      "../browser-runtime/LICENSE.fingerprint-chromium": "browser-runtime/LICENSE.fingerprint-chromium",
+      "../scripts/claude_quota.py": "scripts/claude_quota.py",
+      "../scripts/claude_quota_online.py": "scripts/claude_quota_online.py",
+      "../scripts/quota_runtime.py": "scripts/quota_runtime.py",
+        "../scripts/quota_archive.py": "scripts/quota_archive.py",
+      "../browser-runtime/quota-bridge/manifest.json": "browser-runtime/quota-bridge/manifest.json",
+      "../browser-runtime/quota-bridge/background.js": "browser-runtime/quota-bridge/background.js",
+      "../browser-runtime/quota-bridge/content.js": "browser-runtime/quota-bridge/content.js",
+      "../assets/ai-icons/LICENSE.lobehub.txt": "licenses/LICENSE.lobehub.txt",
+      "../LICENSE": "licenses/LICENSE.txt",
+      "../NOTICE.md": "licenses/NOTICE.md"
+    }
+  },
+  "mainBinaryName": "claude-local"
+}

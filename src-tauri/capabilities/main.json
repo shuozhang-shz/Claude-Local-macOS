@@ -1,0 +1,15 @@
+{
+  "identifier": "main",
+  "description": "主窗口与悬浮监控窗事件及界面控制",
+  "windows": [
+    "main",
+    "monitor"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus"
+  ]
+}

@@ -1,0 +1,606 @@
+import {expect, test} from 'bun:test';
+import {translate} from './i18n';
+import {encodeQrMatrix, renderQrSvgPath} from './qrcode-svg';
+import {
+  areCliAndBrowserProxiesAligned,
+  auditClaudeCliSecurityBoundary,
+  buildClaudeCliAntiLeakSettingsJson,
+  buildCloseLanBridgePrompt,
+  buildDesktopDnsFixPrompt,
+  buildDesktopMihomoAntiLeakYaml,
+  buildMihomoStrictRouteSnippet,
+  buildMobileBridgeConfig,
+  buildShadowrocketSocksQrUri,
+  buildShadowrocketUniversalAntiLeakConf,
+  buildStandaloneMobilePrompt,
+  evaluateRiskChecks,
+  compareProbeExits,
+  isCurrentRiskProbe,
+  generateBridgeCredentials,
+  isValidBridgePort,
+  isValidRfc1918Ipv4,
+  maskIpAddress,
+  parsePortInput,
+  summarizeRiskChecks,
+  toBrowserSocks5ProxyFromCli,
+  toCliHttpProxy,
+  type ConsistencyProbeReport,
+  type LocalRiskSnapshot,
+} from './risk-model';
+import {createWarmingDraft, editWarmingDraft, warmingStageSopKey} from './warming-model';
+import {buildAiProxyPrompt} from './vps';
+
+test('RFC1918 validator strictly accepts private LAN hosts and rejects WAN, loopback, WSL network base and Fake-IP', () => {
+  expect(isValidRfc1918Ipv4('192.168.1.25')).toBe(true);
+  expect(isValidRfc1918Ipv4('10.0.1.0')).toBe(true);
+  expect(isValidRfc1918Ipv4('172.16.0.1')).toBe(true);
+  expect(isValidRfc1918Ipv4('172.31.255.254')).toBe(true);
+
+  expect(isValidRfc1918Ipv4('127.0.0.1')).toBe(false);
+  expect(isValidRfc1918Ipv4('198.18.0.1')).toBe(false);
+  expect(isValidRfc1918Ipv4('198.19.1.2')).toBe(false);
+  expect(isValidRfc1918Ipv4('169.254.10.20')).toBe(false);
+  expect(isValidRfc1918Ipv4('100.64.0.1')).toBe(false);
+  expect(isValidRfc1918Ipv4('8.8.8.8')).toBe(false);
+  expect(isValidRfc1918Ipv4('172.15.1.1')).toBe(false);
+  expect(isValidRfc1918Ipv4('172.32.1.1')).toBe(false);
+  expect(isValidRfc1918Ipv4('192.168.01.2')).toBe(false);
+  expect(isValidRfc1918Ipv4('192.168.0.0')).toBe(false);
+  expect(isValidRfc1918Ipv4('192.168.255.255')).toBe(false);
+  expect(isValidBridgePort(7899)).toBe(true);
+  expect(isValidBridgePort(80)).toBe(false);
+  expect(isValidBridgePort(70000)).toBe(false);
+});
+
+test('IP masking respects privacy toggle across IPv4 and IPv6', () => {
+  expect(maskIpAddress('198.51.100.42', false)).toBe('198.51.100.42');
+  expect(maskIpAddress('198.51.100.42', true)).toBe('198.51.*.*');
+  expect(maskIpAddress('2001:db8:85a3::8a2e:370:7334', true)).toBe('2001:db8:*:*');
+  expect(maskIpAddress(null, true)).toBe('—');
+});
+
+test('ephemeral bridge credentials contain only unambiguous URL-safe characters', () => {
+  const creds = generateBridgeCredentials();
+  expect(creds.username).toMatch(/^kyc[A-HJ-NP-Za-km-z2-9]{6}$/);
+  expect(creds.password).toMatch(/^[A-HJ-NP-Za-km-z2-9]{16}$/);
+});
+
+test('bridge credentials fail closed when secure randomness is unavailable or throws', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  try {
+    Object.defineProperty(globalThis, 'crypto', {configurable: true, value: undefined});
+    expect(() => generateBridgeCredentials()).toThrow('risk_secure_random_unavailable');
+    Object.defineProperty(globalThis, 'crypto', {configurable: true, value: {getRandomValues() {throw new Error('synthetic RNG failure');}}});
+    expect(() => generateBridgeCredentials()).toThrow('risk_secure_random_unavailable');
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'crypto', descriptor);
+    else Reflect.deleteProperty(globalThis, 'crypto');
+  }
+});
+
+test('evaluateRiskChecks distinguishes HTTP country split from static domestic DNS risk', () => {
+  const leakyLocal: LocalRiskSnapshot = {
+    browser: {
+      proxy_configured: false,
+      proxy_scheme: null,
+      proxy_local_port: null,
+      remote_dns_locked: false,
+      target_country: 'US',
+      target_timezone: 'America/Los_Angeles',
+      target_language: 'en-US',
+    },
+    mihomo: {
+      detected: true,
+      client_kind: 'clash-verge-rev',
+      mixed_port: 7897,
+      allow_lan: false,
+      tun_enabled: true,
+      tun_strict_route: false,
+      dns_enabled: true,
+      dns_enhanced_mode: 'fake-ip',
+      dns_respect_rules: false,
+      dns_has_remote_doh: false,
+      dns_has_domestic_plain: true,
+      dns_has_nameserver_policy: false,
+      has_claude_rules: true,
+      has_persona_rules: false,
+      has_quic_reject: false,
+      has_geoip_cn: true,
+      dedicated_listener_port: null,
+    },
+    system: {
+      tun_adapter_active: true,
+      secondary_plaintext_dns_active: true,
+      lan_ipv4_candidates: [],
+      public_wan_detected: true,
+    },
+  };
+
+  const splitProbe: ConsistencyProbeReport = {
+    claude: {domain: 'claude.ai', ok: true, country: 'US', colo: 'IAD', ip: '198.51.100.18', latency_ms: 210, error: null},
+    persona: {domain: 'withpersona.com', ok: true, country: 'JP', colo: 'NRT', ip: '203.0.113.77', latency_ms: 85, error: null},
+    unlisted_dns: {domain: 'cloudflare-dns.com', ok: true, country: 'JP', colo: 'NRT', ip: '203.0.113.77', latency_ms: 82, error: null},
+    exit_isp: {ip: '198.51.100.18', country: 'US', city: 'Ashburn', timezone: 'America/New_York', isp: 'Example Cloud Hosting LLC', hosting: true},
+    same_country: false,
+    same_exit_ip: false,
+    unlisted_same_country: false,
+  };
+
+  const checks = evaluateRiskChecks(leakyLocal, splitProbe, true);
+  expect(summarizeRiskChecks(checks)).toBe('fail');
+  const byId = Object.fromEntries(checks.map(c => [c.id, c]));
+  expect(byId.claude_exit.status).toBe('ok');
+  expect(byId.claude_exit.summaryParams?.ip).toBe('198.51.*.*');
+  expect(byId.persona_consistency.status).toBe('fail');
+  expect(byId.persona_consistency.summaryKey).toBe('risk.check.personaConsistency.countryMismatch');
+  expect(byId.browser_dns_lock.status).toBe('warn');
+  expect(byId.mihomo_dns_leak.status).toBe('warn');
+  expect(byId.kyc_routing_rules.status).toBe('pending');
+  expect(byId.exit_isp_kind.status).toBe('fail');
+});
+
+test('evaluateRiskChecks passes all 6 checks when hardened residential listener and remote DoH align', () => {
+  const hardenedLocal: LocalRiskSnapshot = {
+    browser: {
+      proxy_configured: true,
+      proxy_scheme: 'socks5',
+      proxy_local_port: 7899,
+      remote_dns_locked: true,
+      target_country: 'US',
+      target_timezone: 'America/Los_Angeles',
+      target_language: 'en-US',
+    },
+    mihomo: {
+      detected: true,
+      config_source: 'running_core',
+      config_source_status: 'confirmed',
+      dns_projection_complete: true,
+      dns_has_encrypted_resolver: true,
+      client_kind: 'clash-verge-rev',
+      mixed_port: 7897,
+      allow_lan: false,
+      tun_enabled: true,
+      tun_strict_route: true,
+      dns_enabled: true,
+      dns_enhanced_mode: 'fake-ip',
+      dns_respect_rules: true,
+      dns_has_remote_doh: true,
+      dns_has_domestic_plain: false,
+      dns_has_nameserver_policy: true,
+      has_claude_rules: true,
+      has_persona_rules: true,
+      has_quic_reject: true,
+      has_geoip_cn: true,
+      dedicated_listener_port: 7899,
+    },
+    system: {
+      tun_adapter_active: true,
+      secondary_plaintext_dns_active: false,
+      lan_ipv4_candidates: ['192.168.31.10'],
+      public_wan_detected: false,
+    },
+  };
+
+  const alignedProbe: ConsistencyProbeReport = {
+    claude: {domain: 'claude.ai', ok: true, country: 'US', colo: 'LAX', ip: '198.51.100.24', latency_ms: 180, error: null},
+    persona: {domain: 'withpersona.com', ok: true, country: 'US', colo: 'LAX', ip: '198.51.100.24', latency_ms: 184, error: null},
+    unlisted_dns: {domain: 'cloudflare-dns.com', ok: true, country: 'US', colo: 'LAX', ip: '198.51.100.24', latency_ms: 179, error: null},
+    exit_isp: {ip: '198.51.100.24', country: 'US', city: 'Los Angeles', timezone: 'America/Los_Angeles', isp: 'Charter Communications', hosting: false},
+    same_country: true,
+    same_exit_ip: true,
+    unlisted_same_country: true,
+  };
+
+  const checks = evaluateRiskChecks(hardenedLocal, alignedProbe, false);
+  expect(summarizeRiskChecks(checks)).toBe('ok');
+  for (const item of checks) {
+    expect(item.status).toBe('ok');
+  }
+
+  const dnsCheck = (changes: Partial<LocalRiskSnapshot['mihomo']>, report = alignedProbe) => evaluateRiskChecks(
+    {...hardenedLocal, mihomo: {...hardenedLocal.mihomo, ...changes}}, report,
+  ).find(item => item.id === 'mihomo_dns_leak')!;
+  const strictOnly = dnsCheck({tun_strict_route: false});
+  expect(strictOnly.status).toBe('warn');
+  expect(strictOnly.summaryKey).toBe('risk.check.mihomoDnsLeak.strictRouteDisabled');
+  expect(strictOnly.detailKeys).toEqual([]);
+  expect(dnsCheck({tun_strict_route: null}).status).toBe('pending');
+  expect(dnsCheck({dns_respect_rules: null}).status).toBe('pending');
+  expect(dnsCheck({dns_enabled: false}).status).toBe('warn');
+  expect(dnsCheck({dns_has_encrypted_resolver: false, dns_has_remote_doh: false}).summaryKey).toBe('risk.check.mihomoDnsLeak.noEncryptedDns');
+  expect(dnsCheck({dns_has_remote_doh: false, dns_has_domestic_encrypted: true}).summaryKey).toBe('risk.check.mihomoDnsLeak.domesticEncryptedDns');
+  expect(dnsCheck({dns_projection_complete: false}).status).toBe('pending');
+  expect(dnsCheck({config_source: 'candidate_file', config_source_status: 'not_running'}).status).toBe('pending');
+  expect(dnsCheck({config_source: undefined, config_source_status: undefined}).status).toBe('pending');
+  const unknown = {...alignedProbe, same_country: null, same_exit_ip: null};
+  expect(compareProbeExits(unknown)).toBe('unknown');
+  expect(evaluateRiskChecks(hardenedLocal, unknown).find(item => item.id === 'persona_consistency')?.status).toBe('pending');
+  expect(evaluateRiskChecks(hardenedLocal, {...alignedProbe, claude: {...alignedProbe.claude, country: null}}).find(item => item.id === 'claude_exit')?.status).toBe('pending');
+  const diffIp = {...alignedProbe, persona: {...alignedProbe.persona, ip: '198.51.100.25'}, same_exit_ip: false};
+  expect(compareProbeExits(diffIp)).toBe('same_country');
+  expect(evaluateRiskChecks(hardenedLocal, diffIp).find(item => item.id === 'persona_consistency')?.status).toBe('warn');
+  expect(isCurrentRiskProbe({...hardenedLocal, context_id: 'slot-a'}, {...alignedProbe, context_id: 'slot-b'})).toBe(false);
+  expect(isCurrentRiskProbe({...hardenedLocal, context_id: 'slot-a'}, {...alignedProbe, context_id: 'slot-a'})).toBe(true);
+  expect(isCurrentRiskProbe(hardenedLocal, alignedProbe)).toBe(false);
+  for (const item of [strictOnly, dnsCheck({tun_strict_route: null}), dnsCheck({dns_respect_rules: null}), dnsCheck({dns_enabled: false}), dnsCheck({dns_projection_complete: false}), dnsCheck({dns_has_remote_doh: false, dns_has_domestic_encrypted: true}), dnsCheck({dns_has_encrypted_resolver: false, dns_has_remote_doh: false})]) {
+    for (const locale of ['zh', 'en'] as const) {
+      for (const key of [item.summaryKey, ...(item.detailKeys ?? [])]) expect(translate(key, {}, locale)).not.toBe(key);
+    }
+  }
+});
+
+test('buildMobileBridgeConfig generates hardened profiles for all 4 mobile clients and blocks non-RFC1918 IPs', () => {
+  const creds = {username: 'kycAbc234', password: 'PassWord23456789'};
+  expect(buildMobileBridgeConfig({client: 'shadowrocket', lanIp: '8.8.8.8', port: 7899, ...creds})).toBeNull();
+  expect(buildMobileBridgeConfig({client: 'clash-mi', lanIp: '198.18.0.1', port: 7899, ...creds})).toBeNull();
+
+  const sr = buildMobileBridgeConfig({client: 'shadowrocket', lanIp: '192.168.31.18', port: 7899, ...creds});
+  expect(sr).not.toBeNull();
+  expect(sr!.qrUri.startsWith('socks5://')).toBe(true);
+  expect(sr!.configText).toContain('AND,((PROTOCOL,UDP),(DEST-PORT,443)),REJECT-NO-DROP');
+  expect(sr!.configText).toContain('CL-PC-Residential = socks5, 192.168.31.18, 7899, kycAbc234, PassWord23456789');
+
+  const cm = buildMobileBridgeConfig({client: 'clash-mi', lanIp: '192.168.31.18', port: 7899, ...creds});
+  expect(cm).not.toBeNull();
+  expect(cm!.configText).toContain('strict-route: true');
+  expect(cm!.configText).toContain('AND,((NETWORK,UDP),(DST-PORT,443)),REJECT');
+  expect(cm!.configText).toContain('IP-CIDR,192.168.0.0/16,DIRECT,no-resolve');
+
+  const stash = buildMobileBridgeConfig({client: 'stash', lanIp: '192.168.31.18', port: 7899, ...creds});
+  expect(stash).not.toBeNull();
+  expect(stash!.filename).toBe('claude-local-kyc-stash.yaml');
+
+  const sb = buildMobileBridgeConfig({client: 'sing-box', lanIp: '192.168.31.18', port: 7899, ...creds});
+  expect(sb).not.toBeNull();
+  const parsed = JSON.parse(sb!.configText);
+  expect(parsed.outbounds[0].server).toBe('192.168.31.18');
+  expect(parsed.outbounds[0].network).toBe('tcp');
+  expect(parsed.route.rules[1].port).toEqual([443, 3478, 19302]);
+
+  for (const profileText of [sr!.configText, cm!.configText, stash!.configText, sb!.configText]) {
+    expect(profileText).toContain('browser-intake-us5-datadoghq.com');
+    expect(profileText).toContain('growthbook.io');
+    expect(profileText).toContain('claude.com');
+    expect(profileText).toContain('withpersona.com');
+  }
+
+  const matrix = encodeQrMatrix(sr!.qrUri);
+  expect(matrix.length).toBeGreaterThanOrEqual(21);
+  // Top-left 7x7 finder outer corner modules are dark
+  expect(matrix[0][0]).toBe(true);
+  expect(matrix[0][6]).toBe(true);
+  expect(matrix[6][0]).toBe(true);
+  expect(matrix[3][3]).toBe(true);
+  const svg = renderQrSvgPath(matrix);
+  expect(svg.viewBoxSize).toBe(matrix.length + 4);
+  expect(svg.path.startsWith('M')).toBe(true);
+});
+
+test('Shadowrocket standalone SOCKS5 QR generator produces RFC 3986 socks5:// authority URI, sanitizes config pastes, and builds zero-secret anti-leak conf', () => {
+  expect(buildShadowrocketSocksQrUri({host: '', port: 1080})).toBeNull();
+  expect(buildShadowrocketSocksQrUri({host: 'bad host\nname', port: 1080})).toBeNull();
+  expect(buildShadowrocketSocksQrUri({host: 'res.example.invalid', port: 70000})).toBeNull();
+  expect(parsePortInput('')).toBeNaN();
+  expect(parsePortInput(' "10808", ')).toBe(10808);
+  expect(parsePortInput('7899,')).toBe(7899);
+
+  const uri = buildShadowrocketSocksQrUri({
+    host: ' "res.example.invalid", ',
+    port: parsePortInput('10808,'),
+    username: ' "user_01", ',
+    password: '"pw+slash/eq=",',
+    remarks: 'US-Static-Residential',
+  });
+  expect(uri).not.toBeNull();
+  expect(uri!.startsWith('socks5://')).toBe(true);
+  const parsed = new URL(uri!);
+  expect(parsed.hostname).toBe('res.example.invalid');
+  expect(parsed.port).toBe('10808');
+  expect(decodeURIComponent(parsed.username)).toBe('user_01');
+  expect(decodeURIComponent(parsed.password)).toBe('pw+slash/eq=');
+  expect(parsed.searchParams.get('remarks')).toBe('US-Static-Residential');
+  expect(encodeQrMatrix(uri!).length).toBeGreaterThanOrEqual(25);
+
+  const conf = buildShadowrocketUniversalAntiLeakConf();
+  expect(conf.filename).toBe('claude-local-kyc-shadowrocket-antileak.conf');
+  expect(conf.configText).toContain('ipv6 = false');
+  expect(conf.configText).toContain('udp-policy-not-supported-behaviour = REJECT');
+  expect(conf.configText).toContain('dns-server = https://1.1.1.1/dns-query, https://8.8.8.8/dns-query');
+  expect(conf.configText).toContain('AND,((PROTOCOL,UDP),(DEST-PORT,443)),REJECT-NO-DROP');
+  expect(conf.configText).toContain('browser-intake-us5-datadoghq.com');
+  expect(conf.configText).toContain('growthbook.io');
+  expect(conf.configText).toContain('claude.com');
+  expect(conf.configText).toContain('withpersona.com');
+  expect(conf.configText).toContain('FINAL,PROXY,dns-failed');
+  expect(conf.configText).not.toContain('user_01');
+});
+
+test('AI remediation prompts cover desktop DNS/Persona fix, campus route exclusions, LAN lockdown and standalone campus mode in both locales', () => {
+  const zhFix = buildDesktopDnsFixPrompt({locale: 'zh', dedicatedPort: 7899, enableLanBridge: true, lanUsername: 'kycAbc234', lanPassword: 'PassWord23456789'});
+  expect(zhFix).toContain('withpersona.com');
+  expect(zhFix).toContain('persona.org');
+  expect(zhFix).toContain('respect-rules: true');
+  expect(zhFix).toContain('https://1.1.1.1/dns-query');
+  expect(zhFix).toContain('inet4-route-exclude-address');
+  expect(zhFix).toContain('7899');
+  expect(zhFix).toContain('kycAbc234');
+
+  const enFix = buildDesktopDnsFixPrompt({locale: 'en', dedicatedPort: 7899, enableLanBridge: false});
+  expect(enFix).toContain('listen: 127.0.0.1');
+  expect(enFix).toContain('https://1.1.1.1/dns-query');
+  expect(enFix).toContain('inet4-route-exclude-address');
+  expect(enFix).not.toMatch(/[\u3400-\u9fff]/);
+
+  const enClose = buildCloseLanBridgePrompt(7899, 'en');
+  expect(enClose).toContain('listen: 127.0.0.1');
+  expect(enClose).not.toMatch(/[\u3400-\u9fff]/);
+
+  const zhStandalone = buildStandaloneMobilePrompt({client: 'shadowrocket', targetTimezone: 'America/New_York', locale: 'zh'});
+  expect(zhStandalone).toContain('Shadowrocket (iOS)');
+  expect(zhStandalone).toContain('America/New_York');
+
+  for (const locale of ['zh', 'en'] as const) {
+    const prompt = buildAiProxyPrompt(locale);
+    const lines = prompt.trim().split(/\r?\n/).filter(line => line.trim());
+    expect(lines.length).toBeGreaterThanOrEqual(4);
+    expect(lines.length).toBeLessThanOrEqual(8);
+    expect(prompt).toMatch(/iKuuu/i);
+    expect(prompt).toMatch(/Kookeey/i);
+    expect(prompt).toMatch(/Clash Verge Rev/i);
+    expect(prompt).toMatch(/SOCKS5/i);
+    expect(prompt).toMatch(/dialer-proxy/);
+    expect(prompt).toMatch(/Merge\.yaml/);
+    expect(prompt).toMatch(/config\.yaml/);
+    expect(prompt).toMatch(/tun\.strict-route/);
+    expect(prompt).toMatch(/claudeusercontent\.com/);
+    expect(prompt).toMatch(/withpersona\.com/);
+    expect(prompt).toMatch(/persona\.org/);
+    expect(prompt).toMatch(/ippure\.com/);
+    expect(prompt).toMatch(/198\.18\.0\.0\/15/);
+    expect(prompt).toMatch(/https:\/\/1\.1\.1\.1\/dns-query/);
+    expect(prompt).toMatch(/3478\/19302\/5349/);
+    expect(prompt).toMatch(/socks5:\/\/127\.0\.0\.1:7899/);
+    expect(prompt).toMatch(/美国.*静态.*(?:住宅|家宽)|US static residential/i);
+    expect(prompt).not.toMatch(/function\s+main|tcp-concurrent|mixed-port|7890|proxy-providers|listeners\s*:|rules\s*[:=]|<PASSWORD>|<USERNAME>/i);
+  }
+});
+
+test('all dynamic diagnostic keys resolve in both zh and en without unresolved placeholders', () => {
+  const sampleChecks = [
+    ...evaluateRiskChecks(null, null, false),
+    ...evaluateRiskChecks(
+      {
+        browser: {
+          proxy_configured: true,
+          proxy_scheme: 'http',
+          proxy_local_port: 7897,
+          remote_dns_locked: false,
+          target_country: 'US',
+          target_timezone: 'America/Los_Angeles',
+          target_language: 'en-US',
+        },
+        mihomo: {
+          detected: false,
+          client_kind: null,
+          mixed_port: null,
+          allow_lan: null,
+          tun_enabled: null,
+          tun_strict_route: null,
+          dns_enabled: null,
+          dns_enhanced_mode: null,
+          dns_respect_rules: null,
+          dns_has_remote_doh: false,
+          dns_has_domestic_plain: false,
+          dns_has_nameserver_policy: false,
+          has_claude_rules: false,
+          has_persona_rules: false,
+          has_quic_reject: false,
+          has_geoip_cn: false,
+          dedicated_listener_port: null,
+        },
+        system: {
+          tun_adapter_active: true,
+          secondary_plaintext_dns_active: true,
+          lan_ipv4_candidates: [],
+          public_wan_detected: false,
+        },
+      },
+      {
+        claude: {domain: 'claude.ai', ok: true, country: 'GB', colo: 'LHR', ip: '198.51.100.3', latency_ms: 90, error: null},
+        persona: {domain: 'withpersona.com', ok: true, country: 'GB', colo: 'LHR', ip: '198.51.100.9', latency_ms: 95, error: null},
+        unlisted_dns: {domain: 'cloudflare-dns.com', ok: true, country: 'JP', colo: 'NRT', ip: '203.0.113.5', latency_ms: 60, error: null},
+        exit_isp: {ip: '198.51.100.3', country: 'GB', city: 'London', timezone: 'Europe/London', isp: ''},
+        same_country: true,
+        same_exit_ip: false,
+        unlisted_same_country: false,
+      },
+      false,
+    ),
+  ];
+
+  for (const locale of ['zh', 'en'] as const) {
+    for (const item of sampleChecks) {
+      const title = translate(item.titleKey, {}, locale);
+      const summary = translate(item.summaryKey, item.summaryParams, locale);
+      expect(title).not.toBe(item.titleKey);
+      expect(summary).not.toBe(item.summaryKey);
+      expect(summary).not.toMatch(/\{\w+\}/);
+    }
+  }
+});
+
+test('buildMihomoStrictRouteSnippet and strict-route detection flag tun_strict_route === false', () => {
+  const snippet = buildMihomoStrictRouteSnippet();
+  expect(snippet).toBe('tun:\n  enable: true\n  strict-route: true');
+
+  const checks = evaluateRiskChecks(
+    {
+      browser: {
+        proxy_configured: true,
+        proxy_scheme: 'socks5',
+        proxy_local_port: 17899,
+        remote_dns_locked: true,
+        target_country: 'US',
+        target_timezone: 'America/Los_Angeles',
+        target_language: 'en-US',
+      },
+      mihomo: {
+        config_source: 'running_core',
+        config_source_status: 'confirmed',
+        dns_projection_complete: true,
+        dns_has_encrypted_resolver: true,
+        dns_has_domestic_encrypted: false,
+        detected: true,
+        client_kind: 'Clash Verge Rev',
+        mixed_port: 7897,
+        allow_lan: false,
+        tun_enabled: true,
+        tun_strict_route: false,
+        dns_enabled: true,
+        dns_enhanced_mode: 'fake-ip',
+        dns_respect_rules: true,
+        dns_has_remote_doh: true,
+        dns_has_domestic_plain: false,
+        dns_has_nameserver_policy: true,
+        has_claude_rules: true,
+        has_persona_rules: true,
+        has_quic_reject: true,
+        has_geoip_cn: true,
+        dedicated_listener_port: 17899,
+      },
+      system: {
+        tun_adapter_active: true,
+        secondary_plaintext_dns_active: false,
+        lan_ipv4_candidates: ['192.168.1.10'],
+        public_wan_detected: false,
+      },
+    },
+    null,
+    false,
+  );
+  const dnsCheck = checks.find(item => item.id === 'mihomo_dns_leak');
+  expect(dnsCheck?.status).toBe('warn');
+  expect(dnsCheck?.summaryKey).toBe('risk.check.mihomoDnsLeak.strictRouteDisabled');
+
+  expect(warmingStageSopKey('unregistered', 1)).toBe('identities.warming.sop.unregistered');
+  expect(warmingStageSopKey('kyc_passed', 2)).toBe('identities.warming.sop.kycEarly');
+  expect(warmingStageSopKey('kyc_passed', 5)).toBe('identities.warming.sop.kycPassed');
+  expect(warmingStageSopKey('warming_free', 3)).toBe('identities.warming.sop.kycEarly');
+  expect(warmingStageSopKey('warming_free', 6)).toBe('identities.warming.sop.warmingFree');
+  expect(warmingStageSopKey('pro_ready', 10)).toBe('identities.warming.sop.proReady');
+
+  const draft = createWarmingDraft('2026-10-30');
+  expect(draft.registeredCountry).toBe('');
+  expect(draft.registeredTimezone).toBe('');
+  const edited = editWarmingDraft({
+    id: '10000000000000000000000000000001',
+    name: 'Test Card',
+    email: 'a@b.c',
+    note: null,
+    stage: 'warming_free',
+    created_ymd: '2026-10-25',
+    last_warmed_ymd: '2026-10-30',
+    created_at: 1,
+    updated_at: 2,
+    slot: 'warming-slot-1',
+    seed: 1234,
+    browser_active: false,
+    registered_country: 'JP',
+    registered_timezone: 'Asia/Tokyo',
+  });
+  expect(edited.registeredCountry).toBe('JP');
+  expect(edited.registeredTimezone).toBe('Asia/Tokyo');
+
+  const desktopYaml = buildDesktopMihomoAntiLeakYaml(17899);
+  expect(desktopYaml.configText).toContain('ipv6: false');
+  expect(desktopYaml.configText).toContain('claude.com');
+  expect(desktopYaml.configText).toContain('claudemcpcontent.com');
+  expect(desktopYaml.configText).toContain('persona.com');
+  expect(desktopYaml.configText).toContain('stripecdn.com');
+  expect(desktopYaml.configText).toContain('paypal.com');
+  expect(desktopYaml.configText).toContain('paypalobjects.com');
+  expect(desktopYaml.configText).toContain('braintreegateway.com');
+  expect(desktopYaml.configText).toContain('featuregates.org');
+  expect(desktopYaml.configText).toContain('intercomcdn.com');
+  expect(desktopYaml.configText).toContain('datadoghq.com');
+  expect(desktopYaml.configText).toContain('openai.com');
+  expect(desktopYaml.configText).toContain('chatgpt.com');
+  expect(desktopYaml.configText).toContain('8.8.4.4/32');
+});
+
+test('CLI and Companion Browser dual-protocol proxy alignment recognizes same mixed port and preserves socks5:// on sync', () => {
+  expect(areCliAndBrowserProxiesAligned('socks5://127.0.0.1:7899', 'http://127.0.0.1:7899')).toBe(true);
+  expect(areCliAndBrowserProxiesAligned('socks5://localhost:7899', 'http://127.0.0.1:7899')).toBe(true);
+  expect(areCliAndBrowserProxiesAligned('socks5h://127.0.0.1:7899', 'https://127.0.0.1:7899')).toBe(true);
+  expect(areCliAndBrowserProxiesAligned('socks5://127.0.0.1:7899', null)).toBe(true);
+  expect(areCliAndBrowserProxiesAligned('socks5://127.0.0.1:7899', 'http://127.0.0.1:7890')).toBe(false);
+  expect(areCliAndBrowserProxiesAligned('', 'http://127.0.0.1:7899')).toBe(false);
+
+  expect(toBrowserSocks5ProxyFromCli('http://127.0.0.1:7890')).toBe('socks5://127.0.0.1:7890');
+  expect(toBrowserSocks5ProxyFromCli('http://localhost:7899')).toBe('socks5://127.0.0.1:7899');
+  expect(toCliHttpProxy('socks5://127.0.0.1:7899')).toBe('http://127.0.0.1:7899');
+  expect(toCliHttpProxy('socks5://localhost:17899')).toBe('http://127.0.0.1:17899');
+
+  const cliJson = buildClaudeCliAntiLeakSettingsJson(7899);
+  expect(cliJson.filename).toBe('claude-settings-env-override.json');
+  const parsed = JSON.parse(cliJson.configText);
+  expect(parsed.env.HTTP_PROXY).toBe('http://127.0.0.1:7899');
+  expect(parsed.env.http_proxy).toBe('http://127.0.0.1:7899');
+  expect(parsed.env.HTTPS_PROXY).toBe('http://127.0.0.1:7899');
+  expect(parsed.env.https_proxy).toBe('http://127.0.0.1:7899');
+  expect(parsed.env.ALL_PROXY).toBe('http://127.0.0.1:7899');
+  expect(parsed.env.all_proxy).toBe('http://127.0.0.1:7899');
+  expect(parsed.env.GRPC_PROXY).toBe('http://127.0.0.1:7899');
+  expect(parsed.env.grpc_proxy).toBe('http://127.0.0.1:7899');
+  expect(parsed.env.NO_PROXY).toContain('169.254.0.0/16');
+  expect(parsed.env.no_proxy).toBe(parsed.env.NO_PROXY);
+  expect(parsed.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+  expect(parsed.env.DISABLE_TELEMETRY).toBe('1');
+  expect(parsed.env.DISABLE_ERROR_REPORTING).toBe('1');
+
+  const desktopYamlFull = buildDesktopMihomoAntiLeakYaml(7899).configText;
+  expect(desktopYamlFull).toContain('DOMAIN-KEYWORD,datadoghq,');
+  expect(desktopYamlFull).toContain('DOMAIN-SUFFIX,browser-intake-us5-datadoghq.com,');
+  expect(desktopYamlFull).toContain('DOMAIN-SUFFIX,growthbook.io,');
+  expect(desktopYamlFull).toContain('DOMAIN-SUFFIX,storage.googleapis.com,');
+
+  const hardenedAudit = auditClaudeCliSecurityBoundary({
+    settingsJson: parsed,
+    claudeJson: {
+      mcpServers: {
+        pinnedLocal: {command: 'cmd.exe', args: ['/c', 'npx', '-y', '@modelcontextprotocol/server-filesystem@0.6.2']},
+      },
+    },
+    pendingFailedTelemetryFiles: 0,
+  });
+  expect(hardenedAudit.settings_present).toBe(true);
+  expect(hardenedAudit.telemetry_shield_active).toBe(true);
+  expect(hardenedAudit.proxy_env_complete).toBe(true);
+  expect(hardenedAudit.socks5_in_cli_env).toBe(false);
+  expect(hardenedAudit.has_custom_hooks_or_helpers).toBe(false);
+  expect(hardenedAudit.unpinned_npx_count).toBe(0);
+  expect(hardenedAudit.windows_bare_npx_count).toBe(0);
+  expect(hardenedAudit.remote_http_mcp_count).toBe(0);
+
+  const riskyAudit = auditClaudeCliSecurityBoundary({
+    settingsJson: {
+      env: {HTTP_PROXY: 'socks5://127.0.0.1:7899', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'},
+      apiKeyHelper: 'echo token',
+    },
+    claudeJson: {
+      mcpServers: {
+        bareFloating: {command: 'npx', args: ['-y', '@scope/pkg@latest']},
+        remoteHttp: {url: 'https://mcp.example.com/sse'},
+      },
+    },
+    pendingFailedTelemetryFiles: 2,
+  });
+  expect(riskyAudit.telemetry_shield_active).toBe(false);
+  expect(riskyAudit.proxy_env_complete).toBe(false);
+  expect(riskyAudit.socks5_in_cli_env).toBe(true);
+  expect(riskyAudit.has_custom_hooks_or_helpers).toBe(true);
+  expect(riskyAudit.unpinned_npx_count).toBe(1);
+  expect(riskyAudit.windows_bare_npx_count).toBe(1);
+  expect(riskyAudit.remote_http_mcp_count).toBe(1);
+  expect(riskyAudit.pending_failed_telemetry_files).toBe(2);
+});

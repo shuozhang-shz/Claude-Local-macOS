@@ -1,0 +1,25 @@
+/**
+ * [INPUT]: 可选本机页面偏好；不保存身份、凭据或工作区路径。
+ * [OUTPUT]: 含本地 Token 统计与风控验证的页面枚举，缺失/无效/存储不可用时默认身份管理。
+ * [POS]: 独立产品导航偏好，存储失败不阻止应用使用。
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ */
+export type Page='quick'|'cleaner'|'usage'|'browser'|'system'|'vps'|'risk'|'help'|'settings';
+const key='claude-local.page.v1';
+export function validPage(value:unknown):value is Page{
+  return typeof value==='string'&&['quick','cleaner','usage','browser','system','vps','risk','help','settings'].includes(value);
+}
+export function readPage():Page{
+  try{
+    const rawPrefs=localStorage.getItem('claude-local.preferences.v1');
+    if(rawPrefs){
+      const parsed=JSON.parse(rawPrefs);
+      if(parsed&&typeof parsed==='object'&&validPage(parsed.startupPage))return parsed.startupPage;
+    }
+    const value=localStorage.getItem(key);
+    return validPage(value)?value:'cleaner';
+  }catch{return 'cleaner';}
+}
+export function rememberPage(page:Page):void{
+  try{if(validPage(page))localStorage.setItem(key,page);}catch{/* Navigation works without storage. */}
+}
